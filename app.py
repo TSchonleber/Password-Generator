@@ -871,3 +871,104 @@ def generate_new_password():
     random.shuffle(password)
     
     return ''.join(password)
+
+# Function to log important activities
+def log_activity(action, status):
+    with open('activity_log.txt', 'a') as log_file:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write(f"[{timestamp}] {action} - {status}\n")
+
+# Updating the master password verification to log login attempts
+def verify_master_password():
+    print("Please enter the master password to access the password manager.")
+    for _ in range(3):  # Allow 3 attempts to enter the correct password
+        entered_password = getpass.getpass("Master password: ")  # Use getpass for secure input
+        entered_password_hash = hashlib.sha256(entered_password.encode()).hexdigest()  # Hash the entered password
+
+        if entered_password_hash == MASTER_PASSWORD_HASH:
+            print("Access granted.")
+            log_activity("Master password login", "Success")
+            return True
+        else:
+            print("Incorrect master password. Please try again.")
+            log_activity("Master password login", "Failed")
+    print("Too many incorrect attempts. Exiting.")
+    log_activity("Master password login", "Too many failed attempts")
+    return False
+
+# Updating the password generation function to log password creation
+def generate_and_save_password():
+    check_session_timeout()  # Check for session timeout before proceeding
+    service_name = input("Enter the name of the service (e.g., email, social media): ")
+    password_length = int(input("Enter the desired password length (min 8 characters): "))
+
+    # Ensure the password length is at least the minimum
+    while password_length < MIN_PASSWORD_LENGTH:
+        print(f"Password length must be at least {MIN_PASSWORD_LENGTH} characters.")
+        password_length = int(input(f"Please enter a valid password length (min {MIN_PASSWORD_LENGTH} characters): "))
+
+    # Character Preferences
+    include_lowercase = input("Include lowercase letters? (y/n): ").lower() == 'y'
+    include_uppercase = input("Include uppercase letters? (y/n): ").lower() == 'y'
+    include_digits = input("Include digits? (y/n): ").lower() == 'y'
+    include_special = input("Include special characters? (y/n): ").lower() == 'y'
+
+    # Validate one character type is selected
+    if not (include_lowercase or include_uppercase or include_digits or include_special):
+        print("At least one character type must be selected. Please try again.")
+        return
+
+    # Define character sets
+    lowercase_letters = string.ascii_lowercase if include_lowercase else ''
+    uppercase_letters = string.ascii_uppercase if include_uppercase else ''
+    digits = string.digits if include_digits else ''
+    special_characters = string.punctuation if include_special else ''
+
+    # Build character pool based on user preferences
+    character_pool = lowercase_letters + uppercase_letters + digits + special_characters
+
+    # Generate a valid password based on complexity rules
+    valid_password = False
+    while not valid_password:
+        password = []
+        if include_lowercase:
+            password.append(random.choice(string.ascii_lowercase))  # Add one lowercase letter
+        if include_uppercase:
+            password.append(random.choice(string.ascii_uppercase))  # Add one uppercase letter
+        if include_digits:
+            password.append(random.choice(string.digits))  # Add one digit
+        if include_special:
+            password.append(random.choice(string.punctuation))  # Add one special character
+
+        remaining_length = password_length - len(password)
+        if remaining_length > 0:
+            password += random.choices(character_pool, k=remaining_length)
+
+        random.shuffle(password)
+        final_password = ''.join(password)
+
+        # Enforce password strength rules
+        is_strong, message = enforce_password_strength(final_password)
+        if not is_strong:
+            print(message)
+            print("Regenerating a stronger password...")
+            continue
+
+        valid_password = True
+        print(f"Password Strength: {message}")
+
+    # Save the password and creation date
+    encrypted_password = cipher_suite.encrypt(final_password.encode())
+    creation_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Save the service name, encrypted password, and creation date to a file
+    try:
+        with open('passwords.txt', 'a') as file:
+            file.write(f"Service: {service_name}\n")
+            file.write(f"Encrypted password: {encrypted_password.decode()}\n")
+            file.write(f"Creation date: {creation_date}\n\n")
+        print(f"Password for {service_name} saved.")
+        log_activity(f"Password generated for {service_name}", "Success")
+    except Exception as e:
+        print(f"An error occurred while saving the password: {e}")
+        log_activity(f"Password generation for {service_name}", f"Failed: {e}")
