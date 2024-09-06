@@ -8,6 +8,12 @@ import getpass  # For securely entering the master password without displaying i
 import os  # For checking file existence
 import time  # For implementing the session timeout
 from dotenv import load_dotenv
+import smtplib
+from email.mime.text import MIMEText
+from random import randint
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+import base64
 
 load_dotenv()
 
@@ -361,9 +367,7 @@ def password_strength(password):
     else:
         return "Very Strong"
 
-import smtplib
-from email.mime.text import MIMEText
-from random import randint
+
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
@@ -437,3 +441,433 @@ def verify_master_password():
             print("Incorrect master password. Please try again.")
     print("Too many incorrect attempts. Exiting.")
     return False
+
+# Function to notify the user if any passwords are expired or nearing expiration
+def notify_expired_passwords():
+    check_session_timeout()  # Check for session timeout before proceeding
+    try:
+        with open('passwords.txt', 'r') as file:
+            lines = file.readlines()
+            expired_services = []
+            near_expiration_services = []
+            current_date = datetime.now()
+
+            for i in range(0, len(lines), 4):  # Reading 4 lines at a time (service, password, creation date, blank)
+                service_name = lines[i].strip().split(": ")[1]
+                creation_date = datetime.strptime(lines[i + 2].strip().split(": ")[1], "%Y-%m-%d")
+                expiration_date = creation_date + timedelta(days=EXPIRATION_DAYS)
+                
+                if current_date > expiration_date:
+                    expired_services.append(service_name)
+                elif (expiration_date - current_date).days <= 5:  # Password expires in less than or equal to 5 days
+                    near_expiration_services.append(service_name)
+
+            # Notify about expired passwords
+            if expired_services:
+                print("\n--- Expired Passwords ---")
+                for service in expired_services:
+                    print(f"Your password for {service} has expired! Please generate a new one.")
+            else:
+                print("No passwords have expired.")
+
+            # Notify about passwords nearing expiration
+            if near_expiration_services:
+                print("\n--- Passwords Nearing Expiration ---")
+                for service in near_expiration_services:
+                    print(f"Your password for {service} will expire in less than 5 days. Please consider updating it.")
+
+    except FileNotFoundError:
+        print("No passwords stored yet.")
+
+# Function to enforce strong password creation
+def enforce_password_strength(password):
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if not any(char.islower() for char in password):
+        return False, "Password must contain at least one lowercase letter."
+    if not any(char.isupper() for char in password):
+        return False, "Password must contain at least one uppercase letter."
+    if not any(char.isdigit() for char in password):
+        return False, "Password must contain at least one digit."
+    if not any(char in string.punctuation for char in password):
+        return False, "Password must contain at least one special character."
+    
+    return True, "Password is strong."
+
+# Update in generate_and_save_password function to enforce strength
+def generate_and_save_password():
+    check_session_timeout()  # Check for session timeout before proceeding
+    service_name = input("Enter the name of the service (e.g., email, social media): ")
+    password_length = int(input("Enter the desired password length (min 8 characters): "))
+
+    # Ensure the password length is at least the minimum
+    while password_length < MIN_PASSWORD_LENGTH:
+        print(f"Password length must be at least {MIN_PASSWORD_LENGTH} characters.")
+        password_length = int(input(f"Please enter a valid password length (min {MIN_PASSWORD_LENGTH} characters): "))
+
+    # Character Preferences
+    include_lowercase = input("Include lowercase letters? (y/n): ").lower() == 'y'
+    include_uppercase = input("Include uppercase letters? (y/n): ").lower() == 'y'
+    include_digits = input("Include digits? (y/n): ").lower() == 'y'
+    include_special = input("Include special characters? (y/n): ").lower() == 'y'
+
+    # Validate one character type is selected
+    if not (include_lowercase or include_uppercase or include_digits or include_special):
+        print("At least one character type must be selected. Please try again.")
+        return
+
+    # Define character sets
+    lowercase_letters = string.ascii_lowercase if include_lowercase else ''
+    uppercase_letters = string.ascii_uppercase if include_uppercase else ''
+    digits = string.digits if include_digits else ''
+    special_characters = string.punctuation if include_special else ''
+
+    # Build character pool based on user preferences
+    character_pool = lowercase_letters + uppercase_letters + digits + special_characters
+
+    # Generate a valid password based on complexity rules
+    valid_password = False
+    while not valid_password:
+        password = []
+        if include_lowercase:
+            password.append(random.choice(string.ascii_lowercase))  # Add one lowercase letter
+        if include_uppercase:
+            password.append(random.choice(string.ascii_uppercase))  # Add one uppercase letter
+        if include_digits:
+            password.append(random.choice(string.digits))  # Add one digit
+        if include_special:
+            password.append(random.choice(string.punctuation))  # Add one special character
+
+        remaining_length = password_length - len(password)
+        if remaining_length > 0:
+            password += random.choices(character_pool, k=remaining_length)
+
+        random.shuffle(password)
+        final_password = ''.join(password)
+
+        # Enforce password strength rules
+        is_strong, message = enforce_password_strength(final_password)
+        if not is_strong:
+            print(message)
+            print("Regenerating a stronger password...")
+        else:
+            valid_password = True
+            print(f"Password Strength: {message}")
+
+    # Save the password and creation date
+    encrypted_password = cipher_suite.encrypt(final_password.encode())
+    creation_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Save the service name, encrypted password, and creation date to a file
+    try:
+        with open('passwords.txt', 'a') as file:
+            file.write(f"Service: {service_name}\n")
+            file.write(f"Encrypted password: {encrypted_password.decode()}\n")
+            file.write(f"Creation date: {creation_date}\n\n")
+        print(f"Password for {service_name} saved.")
+    except Exception as e:
+        print(f"An error occurred while saving the password: {e}")
+
+# Function to securely encrypt the password data for backup
+def encrypt_data(data, key):
+    cipher = Cipher(algorithms.AES(key), modes.GCM(os.urandom(12)), backend=default_backend())
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(data.encode()) + encryptor.finalize()
+    return encryptor.tag + ciphertext
+
+# Function to decrypt the encrypted password data for restoration
+def decrypt_data(ciphertext, key):
+    tag, ciphertext = ciphertext[:16], ciphertext[16:]
+    cipher = Cipher(algorithms.AES(key), modes.GCM(os.urandom(12), tag), backend=default_backend())
+    decryptor = cipher.decryptor()
+    return decryptor.update(ciphertext) + decryptor.finalize()
+
+# Backup function: Encrypt the password file and save it as a backup
+def backup_passwords_to_file():
+    check_session_timeout()  # Check for session timeout before proceeding
+    encryption_key = os.getenv('BACKUP_ENCRYPTION_KEY')  # Backup key from env variable
+    if encryption_key is None:
+        print("Error: Backup encryption key is not set in the environment variables.")
+        return
+    encryption_key = base64.urlsafe_b64decode(encryption_key)
+    try:
+        with open('passwords.txt', 'r') as file:
+            password_data = file.read()
+
+        encrypted_data = encrypt_data(password_data, encryption_key)
+        with open('passwords_backup.enc', 'wb') as backup_file:
+            backup_file.write(encrypted_data)
+        print("Passwords successfully backed up and encrypted.")
+    except FileNotFoundError:
+        print("No passwords found to back up.")
+
+# Restore function: Decrypt the backup file and restore the passwords
+def restore_passwords_from_backup():
+    check_session_timeout()  # Check for session timeout before proceeding
+    encryption_key = os.getenv('BACKUP_ENCRYPTION_KEY')  # Backup key from env variable
+    if encryption_key is None:
+        print("Error: Backup encryption key is not set in the environment variables.")
+        return
+    encryption_key = base64.urlsafe_b64decode(encryption_key)
+    try:
+        with open('passwords_backup.enc', 'rb') as backup_file:
+            encrypted_data = backup_file.read()
+
+        decrypted_data = decrypt_data(encrypted_data, encryption_key)
+        with open('passwords.txt', 'w') as restore_file:
+            restore_file.write(decrypted_data.decode())
+        print("Passwords successfully restored from the encrypted backup.")
+    except FileNotFoundError:
+        print("No backup file found.")
+    except Exception as e:
+        print(f"Error during restoration: {e}")
+
+import json
+
+# Function to load password history from a file
+def load_password_history():
+    try:
+        with open('password_history.json', 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
+
+# Function to save password history to a file
+def save_password_history(history):
+    with open('password_history.json', 'w') as file:
+        json.dump(history, file)
+
+# Function to add a password to the history
+def add_password_to_history(service_name, password):
+    history = load_password_history()
+    
+    # Encrypt the password before storing it in the history
+    encrypted_password = cipher_suite.encrypt(password.encode()).decode()
+
+    # Add the password to the history for the specific service
+    if service_name not in history:
+        history[service_name] = []
+    history[service_name].append(encrypted_password)
+
+    # Limit the history size to the last 5 passwords per service (optional)
+    if len(history[service_name]) > 5:
+        history[service_name] = history[service_name][-5:]
+
+    save_password_history(history)
+
+# Function to check if a password was previously used for a service
+def is_password_in_history(service_name, password):
+    history = load_password_history()
+
+    if service_name not in history:
+        return False
+
+    # Encrypt the password to check against stored history
+    encrypted_password = cipher_suite.encrypt(password.encode()).decode()
+
+    return encrypted_password in history[service_name]
+
+# Update in generate_and_save_password function to check history
+def generate_and_save_password():
+    check_session_timeout()  # Check for session timeout before proceeding
+    service_name = input("Enter the name of the service (e.g., email, social media): ")
+    password_length = int(input("Enter the desired password length (min 8 characters): "))
+
+    # Ensure the password length is at least the minimum
+    while password_length < MIN_PASSWORD_LENGTH:
+        print(f"Password length must be at least {MIN_PASSWORD_LENGTH} characters.")
+        password_length = int(input(f"Please enter a valid password length (min {MIN_PASSWORD_LENGTH} characters): "))
+
+    # Character Preferences
+    include_lowercase = input("Include lowercase letters? (y/n): ").lower() == 'y'
+    include_uppercase = input("Include uppercase letters? (y/n): ").lower() == 'y'
+    include_digits = input("Include digits? (y/n): ").lower() == 'y'
+    include_special = input("Include special characters? (y/n): ").lower() == 'y'
+
+    # Validate one character type is selected
+    if not (include_lowercase or include_uppercase or include_digits or include_special):
+        print("At least one character type must be selected. Please try again.")
+        return
+
+    # Define character sets
+    lowercase_letters = string.ascii_lowercase if include_lowercase else ''
+    uppercase_letters = string.ascii_uppercase if include_uppercase else ''
+    digits = string.digits if include_digits else ''
+    special_characters = string.punctuation if include_special else ''
+
+    # Build character pool based on user preferences
+    character_pool = lowercase_letters + uppercase_letters + digits + special_characters
+
+    # Generate a valid password based on complexity rules
+    valid_password = False
+    while not valid_password:
+        password = []
+        if include_lowercase:
+            password.append(random.choice(string.ascii_lowercase))  # Add one lowercase letter
+        if include_uppercase:
+            password.append(random.choice(string.ascii_uppercase))  # Add one uppercase letter
+        if include_digits:
+            password.append(random.choice(string.digits))  # Add one digit
+        if include_special:
+            password.append(random.choice(string.punctuation))  # Add one special character
+
+        remaining_length = password_length - len(password)
+        if remaining_length > 0:
+            password += random.choices(character_pool, k=remaining_length)
+
+        random.shuffle(password)
+        final_password = ''.join(password)
+
+        # Enforce password strength rules
+        is_strong, message = enforce_password_strength(final_password)
+        if not is_strong:
+            print(message)
+            print("Regenerating a stronger password...")
+            continue
+
+        # Check if the password was previously used
+        if is_password_in_history(service_name, final_password):
+            print(f"This password has been used before for {service_name}. Generating a new password...")
+            continue
+
+        valid_password = True
+        print(f"Password Strength: {message}")
+
+    # Save the password and creation date
+    encrypted_password = cipher_suite.encrypt(final_password.encode())
+    creation_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Save the service name, encrypted password, and creation date to a file
+    try:
+        with open('passwords.txt', 'a') as file:
+            file.write(f"Service: {service_name}\n")
+            file.write(f"Encrypted password: {encrypted_password.decode()}\n")
+            file.write(f"Creation date: {creation_date}\n\n")
+        print(f"Password for {service_name} saved.")
+    except Exception as e:
+        print(f"An error occurred while saving the password: {e}")
+
+    # Add the password to history
+    add_password_to_history(service_name, final_password)
+
+import csv
+
+# Function to export passwords to an encrypted CSV file
+def export_passwords_to_csv():
+    check_session_timeout()  # Check for session timeout before proceeding
+    try:
+        with open('passwords.txt', 'r') as file:
+            lines = file.readlines()
+        
+        with open('passwords_export.csv', 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(['Service Name', 'Encrypted Password', 'Creation Date'])  # Header
+
+            for i in range(0, len(lines), 4):  # Reading 4 lines at a time (service, password, creation date, blank)
+                service_name = lines[i].strip().split(": ")[1]
+                encrypted_password = lines[i + 1].strip().split(": ")[1]
+                creation_date = lines[i + 2].strip().split(": ")[1]
+
+                csv_writer.writerow([service_name, encrypted_password, creation_date])
+
+        print("Passwords successfully exported to 'passwords_export.csv'.")
+
+    except FileNotFoundError:
+        print("No passwords found to export.")
+
+# Function to import passwords from an encrypted CSV file
+def import_passwords_from_csv():
+    check_session_timeout()  # Check for session timeout before proceeding
+    try:
+        with open('passwords_import.csv', 'r') as csvfile:
+            csv_reader = csv.reader(csvfile)
+            next(csv_reader)  # Skip header
+
+            with open('passwords.txt', 'a') as file:
+                for row in csv_reader:
+                    service_name, encrypted_password, creation_date = row
+
+                    # Append each row to the passwords.txt file
+                    file.write(f"Service: {service_name}\n")
+                    file.write(f"Encrypted password: {encrypted_password}\n")
+                    file.write(f"Creation date: {creation_date}\n\n")
+
+        print("Passwords successfully imported from 'passwords_import.csv'.")
+
+    except FileNotFoundError:
+        print("No CSV file found to import from.")
+    except Exception as e:
+        print(f"Error during import: {e}")
+
+# Function to automatically regenerate passwords if they have expired
+def auto_regenerate_expired_passwords():
+    check_session_timeout()  # Check for session timeout before proceeding
+    try:
+        with open('passwords.txt', 'r') as file:
+            lines = file.readlines()
+        
+        updated_lines = []
+        current_date = datetime.now()
+
+        for i in range(0, len(lines), 4):  # Reading 4 lines at a time (service, password, creation date, blank)
+            service_name = lines[i].strip().split(": ")[1]
+            encrypted_password = lines[i + 1].strip().split(": ")[1]
+            creation_date = datetime.strptime(lines[i + 2].strip().split(": ")[1], "%Y-%m-%d")
+            expiration_date = creation_date + timedelta(days=EXPIRATION_DAYS)
+
+            # Check if password is expired
+            if current_date > expiration_date:
+                # Regenerate a new password if expired
+                print(f"Password for {service_name} has expired. Generating a new one...")
+                new_password = generate_new_password()
+                
+                # Encrypt the new password and update the expiration date
+                encrypted_new_password = cipher_suite.encrypt(new_password.encode()).decode()
+                new_creation_date = datetime.now().strftime("%Y-%m-%d")
+                
+                # Update the lines with the new password and creation date
+                updated_lines.append(f"Service: {service_name}\n")
+                updated_lines.append(f"Encrypted password: {encrypted_new_password}\n")
+                updated_lines.append(f"Creation date: {new_creation_date}\n\n")
+                
+                # Notify user
+                print(f"New password for {service_name} has been generated and saved.")
+            else:
+                # Keep the original password if not expired
+                updated_lines.extend(lines[i:i + 4])
+
+        # Save the updated passwords back to the file
+        with open('passwords.txt', 'w') as file:
+            file.writelines(updated_lines)
+
+    except FileNotFoundError:
+        print("No passwords found to check for expiration.")
+    except Exception as e:
+        print(f"Error during auto-regeneration: {e}")
+
+# Helper function to generate a new password
+def generate_new_password():
+    password_length = 12  # Default password length
+
+    # Character sets for generating the password
+    lowercase_letters = string.ascii_lowercase
+    uppercase_letters = string.ascii_uppercase
+    digits = string.digits
+    special_characters = string.punctuation
+
+    character_pool = lowercase_letters + uppercase_letters + digits + special_characters
+
+    password = []
+    password.append(random.choice(lowercase_letters))  # Ensure at least one lowercase letter
+    password.append(random.choice(uppercase_letters))  # Ensure at least one uppercase letter
+    password.append(random.choice(digits))  # Ensure at least one digit
+    password.append(random.choice(special_characters))  # Ensure at least one special character
+
+    # Fill the remaining length with random characters
+    remaining_length = password_length - len(password)
+    password += random.choices(character_pool, k=remaining_length)
+
+    # Shuffle the password to randomize it
+    random.shuffle(password)
+    
+    return ''.join(password)
